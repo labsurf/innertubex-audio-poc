@@ -177,6 +177,22 @@ private fun runCli(args: Array<String>) = runBlocking {
 }
 
 private fun newClient() = HttpClient(OkHttp) {
+    engine {
+        config {
+            addNetworkInterceptor { chain ->
+                val response = chain.proceed(chain.request())
+                if (response.code in 300..399) {
+                    val requestHost = chain.request().url.host
+                    val targetHost = response.header("Location")
+                        ?.let { chain.request().url.resolve(it)?.host }
+                        ?.filter { it.isLetterOrDigit() || it == '.' || it == '-' }
+                        ?.take(100) ?: "unknown"
+                    println("upstream_redirect status=${response.code} fromHost=$requestHost toHost=$targetHost")
+                }
+                response
+            }
+        }
+    }
     install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
     install(HttpTimeout) { requestTimeoutMillis = 20_000; connectTimeoutMillis = 10_000; socketTimeoutMillis = 15_000 }
 }
