@@ -88,7 +88,17 @@ private fun handleProbe(exchange: HttpExchange) {
         respond(exchange, 200, "{\"result\":\"PASS\",\"client\":\"${jsonSafe(result.client)}\",\"transport\":\"${result.transport}\",\"durationSeconds\":${result.duration ?: "null"},\"extractionMs\":${result.extractionMs},\"httpStatus\":${result.httpStatus},\"contentType\":\"${jsonSafe(safeContentType(result.contentType))}\",\"bytesReceived\":${result.bytes},\"totalMs\":$totalMs}")
     } catch (e: Exception) {
         val label = if (e is StreamResolveException) "stream_resolve_${e.reason.name}" else safeLabel(e)
-        println("probe result=FAIL error=$label totalMs=${elapsedMs(started)}")
+        val causes = generateSequence(e as Throwable?) { it.cause }
+            .take(6)
+            .map { it.javaClass.simpleName.filter { ch -> ch.isLetterOrDigit() || ch == '_' }.take(60) }
+            .joinToString(">")
+        val attempts = if (e is StreamResolveException) e.diagnostics?.attempts.orEmpty().take(8).joinToString(",") { attempt ->
+            val profile = attempt.profileId?.filter { it.isLetterOrDigit() || it == '_' || it == '-' } ?: "unknown"
+            val outcome = attempt.outcome.substringBefore(':').filter { it.isLetterOrDigit() || it == '_' || it == '-' }
+            "$profile:$outcome"
+        } else ""
+        val detail = safeDetail(e.cause?.message ?: e.message)
+        println("probe result=FAIL error=$label causes=$causes attempts=$attempts detail=$detail totalMs=${elapsedMs(started)}")
         respond(exchange, 502, "{\"result\":\"FAIL\",\"error\":\"${jsonSafe(label)}\"}")
     } finally { busy.set(false) }
 }
@@ -181,3 +191,10 @@ private fun elapsedMs(start: Long) = (System.nanoTime() - start) / 1_000_000
 private fun safeContentType(v: String) = v.substringBefore(';').filter { it.isLetterOrDigit() || it in "/.+-_" }.take(100)
 private fun jsonSafe(v: String) = v.replace("\\", "\\\\").replace("\"", "\\\"").filter { it >= ' ' }
 private fun safeLabel(e: Exception) = (e.message ?: e::class.simpleName ?: "error").substringBefore(':').filter { it.isLetterOrDigit() || it in "_-" }.take(100)
+private fun safeDetail(value: String?): String = value.orEmpty()
+    .replace(Regex("https?://[^\\s\\\"']+", RegexOption.IGNORE_CASE), "<url>")
+    .replace(Regex("(?i)(authorization|cookie|set-cookie|token|visitor[_-]?data|signature|sig|key)\\s*[:=]\\s*[^,\\s]+"), "\$1=<redacted>")
+    .replace(Regex("[A-Za-z0-9_=-]{64,}"), "<redacted>")
+    .replace(Regex("\\s+"), " ")
+    .replace(Regex("[^A-Za-z0-9 _.,:;()/<>-]"), "")
+    .take(180)
